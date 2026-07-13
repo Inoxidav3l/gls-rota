@@ -494,6 +494,30 @@ function pinIcon(label, isDepot) {
   });
 }
 
+function medianOf(numbers) {
+  const sorted = numbers.slice().sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+// Se uma morada foi mal geocodificada e caiu longe de todas as outras,
+// isso força o mapa a afastar-se ao ponto de ficar quase em branco.
+// Para o enquadramento (fitBounds), ignora pontos a mais de 20 km da
+// mediana do grupo — continuam visíveis como marcador, só não mandam
+// no zoom.
+const OUTLIER_RADIUS_METERS = 20000;
+
+function boundsExcludingOutliers(depot, orderedStops) {
+  const all = [depot, ...orderedStops];
+  const medianPoint = {
+    lat: medianOf(all.map((p) => p.lat)),
+    lng: medianOf(all.map((p) => p.lng)),
+  };
+  const inliers = all.filter((p) => haversineMeters(medianPoint, p) <= OUTLIER_RADIUS_METERS);
+  const useSet = inliers.length ? inliers : all;
+  return L.latLngBounds(useSet.map((p) => [p.lat, p.lng]));
+}
+
 function renderMap(depot, orderedStops, polylineCoords) {
   ensureMap();
   map.invalidateSize();
@@ -512,11 +536,10 @@ function renderMap(depot, orderedStops, polylineCoords) {
   if (polylineCoords && polylineCoords.length) {
     const line = L.polyline(polylineCoords, { color: "#FF5A1F", weight: 4, opacity: 0.9 }).addTo(map);
     mapLayers.push(line);
-    map.fitBounds(line.getBounds(), { padding: [30, 30] });
-  } else {
-    const bounds = L.latLngBounds([[depot.lat, depot.lng], ...orderedStops.map((s) => [s.lat, s.lng])]);
-    map.fitBounds(bounds, { padding: [30, 30] });
   }
+
+  const bounds = boundsExcludingOutliers(depot, orderedStops);
+  map.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
 }
 
 /* =========================================================

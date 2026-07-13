@@ -496,6 +496,7 @@ function pinIcon(label, isDepot) {
 
 function renderMap(depot, orderedStops, polylineCoords) {
   ensureMap();
+  map.invalidateSize();
   clearMapLayers();
 
   const depotMarker = L.marker([depot.lat, depot.lng], {
@@ -676,7 +677,10 @@ btnCalc.addEventListener("click", async () => {
       console.warn("Routes API falhou, a mostrar só a ordenação:", err);
     }
 
-    // 5. Render
+    // 5. Render — mostrar o ecrã ANTES de inicializar o Leaflet, senão
+    //    o mapa nasce com tamanho zero (container ainda escondido) e
+    //    os tiles nunca chegam a aparecer.
+    showView(viewRoute);
     renderMap(depot, orderedStops, routeResult ? routeResult.polyline : null);
     renderStopList(depot, orderedGroups);
 
@@ -688,8 +692,6 @@ btnCalc.addEventListener("click", async () => {
       summary += " · " + failedPoints.length + " não localizadas";
     }
     routeSummary.textContent = summary;
-
-    showView(viewRoute);
   } catch (err) {
     console.error(err);
     showView(viewInput);

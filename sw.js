@@ -1,4 +1,4 @@
-const CACHE_NAME = "gls-rota-v3";
+const CACHE_NAME = "gls-rota-v4";
 const SHELL_FILES = [
   "./",
   "./index.html",

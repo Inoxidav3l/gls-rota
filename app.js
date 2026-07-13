@@ -35,6 +35,39 @@ let settings = loadSettings();
 let geocodeCache = loadGeocodeCache();
 
 /* =========================================================
+   Carregamento da biblioteca Maps JavaScript API
+
+   Importante: as APIs REST "clássicas" (Geocoding, Directions)
+   só aceitam chaves SEM restrição de site, ou restritas por IP —
+   não funcionam com chaves restritas por "Sites" (referenciador
+   HTTP), que é o que configurámos por segurança. A biblioteca
+   Maps JavaScript API é a via pensada para correr no browser e
+   funciona corretamente com chaves restritas por site.
+   ========================================================= */
+
+let googleMapsLoadPromise = null;
+
+function loadGoogleMapsScript(apiKey) {
+  if (window.google && window.google.maps) return Promise.resolve();
+  if (googleMapsLoadPromise) return googleMapsLoadPromise;
+
+  googleMapsLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src =
+      "https://maps.googleapis.com/maps/api/js?key=" +
+      encodeURIComponent(apiKey) +
+      "&loading=async&language=pt-PT&region=PT";
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () =>
+      reject(new Error("Não foi possível carregar a biblioteca do Google Maps. Confirma a chave da API."));
+    document.head.appendChild(script);
+  });
+
+  return googleMapsLoadPromise;
+}
+
+/* =========================================================
    Elementos DOM
    ========================================================= */
 
@@ -144,32 +177,29 @@ function normalizeAddressKey(addr) {
   return addr.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+let geocoderInstance = null;
+
 async function geocodeAddress(address, apiKey) {
   const key = normalizeAddressKey(address);
   if (geocodeCache[key]) return geocodeCache[key];
 
-  const url =
-    "https://maps.googleapis.com/maps/api/geocode/json?address=" +
-    encodeURIComponent(address) +
-    "&region=pt&language=pt-PT&key=" +
-    encodeURIComponent(apiKey);
+  await loadGoogleMapsScript(apiKey);
+  if (!geocoderInstance) geocoderInstance = new google.maps.Geocoder();
 
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("Falha de rede a geocodificar: " + address);
-  const data = await res.json();
-
-  if (data.status !== "OK" || !data.results || !data.results.length) {
-    throw new Error(
-      "Não foi possível localizar: \"" + address + "\" (" + data.status + ")"
-    );
-  }
-
-  const loc = data.results[0].geometry.location;
-  const result = {
-    lat: loc.lat,
-    lng: loc.lng,
-    formatted: data.results[0].formatted_address,
-  };
+  const result = await new Promise((resolve, reject) => {
+    geocoderInstance.geocode({ address, region: "PT" }, (results, status) => {
+      if (status !== "OK" || !results || !results.length) {
+        reject(new Error("Não foi possível localizar: \"" + address + "\" (" + status + ")"));
+        return;
+      }
+      const loc = results[0].geometry.location;
+      resolve({
+        lat: loc.lat(),
+        lng: loc.lng(),
+        formatted: results[0].formatted_address,
+      });
+    });
+  });
 
   geocodeCache[key] = result;
   saveGeocodeCache(geocodeCache);
@@ -262,71 +292,44 @@ function optimizeOrder(depot, points) {
 
 const MAX_INTERMEDIATES_PER_CALL = 23;
 
-function decodePolyline(encoded) {
-  let index = 0, lat = 0, lng = 0;
-  const coords = [];
-  while (index < encoded.length) {
-    let result = 1, shift = 0, b;
-    do {
-      b = encoded.charCodeAt(index++) - 63 - 1;
-      result += b << shift;
-      shift += 5;
-    } while (b >= 0x1f);
-    lat += result & 1 ? ~(result >> 1) : result >> 1;
+let directionsServiceInstance = null;
 
-    result = 1;
-    shift = 0;
-    do {
-      b = encoded.charCodeAt(index++) - 63 - 1;
-      result += b << shift;
-      shift += 5;
-    } while (b >= 0x1f);
-    lng += result & 1 ? ~(result >> 1) : result >> 1;
-
-    coords.push([lat * 1e-5, lng * 1e-5]);
-  }
-  return coords;
-}
-
-async function computeRouteChunk(origin, destination, intermediates, apiKey) {
-  const body = {
-    origin: { location: { latLng: { latitude: origin.lat, longitude: origin.lng } } },
-    destination: { location: { latLng: { latitude: destination.lat, longitude: destination.lng } } },
-    travelMode: "DRIVE",
-    routingPreference: "TRAFFIC_AWARE",
-    polylineQuality: "OVERVIEW",
-    computeAlternativeRoutes: false,
-  };
-  if (intermediates.length) {
-    body.intermediates = intermediates.map((p) => ({
-      location: { latLng: { latitude: p.lat, longitude: p.lng } },
-    }));
+function computeRouteChunk(origin, destination, intermediates) {
+  if (!directionsServiceInstance) {
+    directionsServiceInstance = new google.maps.DirectionsService();
   }
 
-  const res = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Goog-Api-Key": apiKey,
-      "X-Goog-FieldMask": "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline",
+  const request = {
+    origin: { lat: origin.lat, lng: origin.lng },
+    destination: { lat: destination.lat, lng: destination.lng },
+    waypoints: intermediates.map((p) => ({
+      location: { lat: p.lat, lng: p.lng },
+      stopover: true,
+    })),
+    optimizeWaypoints: false,
+    travelMode: google.maps.TravelMode.DRIVING,
+    drivingOptions: {
+      departureTime: new Date(),
+      trafficModel: "bestguess",
     },
-    body: JSON.stringify(body),
-  });
+  };
 
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error("Routes API falhou (" + res.status + "): " + errText.slice(0, 200));
-  }
-  const data = await res.json();
-  if (!data.routes || !data.routes.length) {
-    throw new Error("Routes API não devolveu nenhuma rota.");
-  }
-  return data.routes[0];
+  return new Promise((resolve, reject) => {
+    directionsServiceInstance.route(request, (result, status) => {
+      if (status !== "OK" || !result.routes || !result.routes.length) {
+        reject(new Error("Não foi possível traçar este troço da rota (" + status + ")"));
+        return;
+      }
+      resolve(result.routes[0]);
+    });
+  });
 }
 
 // Recebe [depot, stop1, stop2, ...] (já na ordem final) e devolve
 // { polyline: [[lat,lng],...], distanceMeters, durationSeconds }
 async function computeFullRoute(orderedPointsWithDepot, apiKey, onProgress) {
+  await loadGoogleMapsScript(apiKey);
+
   const pts = orderedPointsWithDepot;
   let fullCoords = [];
   let totalDistance = 0;
@@ -345,12 +348,21 @@ async function computeFullRoute(orderedPointsWithDepot, apiKey, onProgress) {
 
     if (onProgress) onProgress(chunkNum, totalChunks);
 
-    const route = await computeRouteChunk(origin, destination, intermediates, apiKey);
-    const coords = decodePolyline(route.polyline.encodedPolyline);
-    fullCoords = fullCoords.concat(coords);
-    totalDistance += route.distanceMeters || 0;
-    const durSeconds = parseFloat((route.duration || "0s").replace("s", ""));
-    totalDuration += durSeconds || 0;
+    const route = await computeRouteChunk(origin, destination, intermediates);
+
+    for (const leg of route.legs) {
+      for (const step of leg.steps) {
+        for (const pt of step.path) {
+          fullCoords.push([pt.lat(), pt.lng()]);
+        }
+      }
+      totalDistance += leg.distance ? leg.distance.value : 0;
+      totalDuration += leg.duration_in_traffic
+        ? leg.duration_in_traffic.value
+        : leg.duration
+        ? leg.duration.value
+        : 0;
+    }
 
     i = chunkEnd;
   }

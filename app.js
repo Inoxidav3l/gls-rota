@@ -198,6 +198,26 @@ function normalizeAddressKey(addr) {
   return addr.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+// Portugal não tem um único tipo de componente "freguesia" fiável no
+// Geocoding API — tenta os tipos mais prováveis, do mais específico
+// para o mais genérico, e usa o primeiro que encontrar.
+const PARISH_COMPONENT_PRIORITY = [
+  "sublocality_level_1",
+  "sublocality",
+  "administrative_area_level_3",
+  "postal_town",
+  "locality",
+];
+
+function extractParish(addressComponents) {
+  if (!addressComponents) return "Sem freguesia identificada";
+  for (const type of PARISH_COMPONENT_PRIORITY) {
+    const match = addressComponents.find((c) => c.types.includes(type));
+    if (match) return match.long_name;
+  }
+  return "Sem freguesia identificada";
+}
+
 let geocoderInstance = null;
 
 async function geocodeAddress(address, apiKey) {
@@ -220,6 +240,7 @@ async function geocodeAddress(address, apiKey) {
         lat: loc.lat(),
         lng: loc.lng(),
         formatted: results[0].formatted_address,
+        parish: extractParish(results[0].address_components),
       });
     });
   });
@@ -302,9 +323,55 @@ function twoOptImprove(depot, order) {
   return bestOrder;
 }
 
-function optimizeOrder(depot, points) {
-  const nn = nearestNeighborOrder(depot, points);
-  return twoOptImprove(depot, nn);
+function optimizeWithinGroup(entryPoint, points) {
+  const nn = nearestNeighborOrder(entryPoint, points);
+  return twoOptImprove(entryPoint, nn);
+}
+
+// Agrupa as paragens por freguesia, decide a ordem das freguesias pela
+// proximidade (a partir do depósito, depois de freguesia em freguesia),
+// e dentro de cada freguesia otimiza a sequência das paragens. Isto
+// garante que a carrinha pode ser carregada por ordem de visita sem
+// misturar freguesias, mesmo que isso não seja o caminho geometricamente
+// mais curto possível.
+function optimizeOrderByParish(depot, points) {
+  const groups = new Map();
+  for (const p of points) {
+    const label = p.parish || "Sem freguesia identificada";
+    if (!groups.has(label)) groups.set(label, []);
+    groups.get(label).push(p);
+  }
+
+  const remainingGroups = new Map(groups);
+  const orderedGroups = []; // [{ parish, stops: [...] }]
+  let cursor = depot;
+
+  while (remainingGroups.size) {
+    // escolhe a próxima freguesia pela distância do seu ponto mais
+    // próximo ao cursor atual (fim da freguesia anterior, ou depósito)
+    let bestLabel = null;
+    let bestPoint = null;
+    let bestDist = Infinity;
+    for (const [label, pts] of remainingGroups) {
+      for (const p of pts) {
+        const d = haversineMeters(cursor, p);
+        if (d < bestDist) {
+          bestDist = d;
+          bestLabel = label;
+          bestPoint = p;
+        }
+      }
+    }
+
+    const groupPoints = remainingGroups.get(bestLabel);
+    remainingGroups.delete(bestLabel);
+
+    const orderedStops = optimizeWithinGroup(cursor, groupPoints);
+    orderedGroups.push({ parish: bestLabel, stops: orderedStops });
+    cursor = orderedStops[orderedStops.length - 1];
+  }
+
+  return orderedGroups;
 }
 
 /* =========================================================
@@ -463,7 +530,7 @@ function navigationUrl(point) {
   );
 }
 
-function renderStopList(depot, orderedStops) {
+function renderStopList(depot, orderedGroups) {
   stopList.innerHTML = "";
 
   const depotLi = document.createElement("li");
@@ -476,20 +543,34 @@ function renderStopList(depot, orderedStops) {
     "</span>";
   stopList.appendChild(depotLi);
 
-  orderedStops.forEach((s, idx) => {
-    const li = document.createElement("li");
-    li.className = "stop-item";
-    li.innerHTML =
-      '<span class="stop-item__badge">' + (idx + 1) + "</span>" +
-      '<span class="stop-item__text">' +
-      '<div class="stop-item__addr">' + escapeHtml(s.formatted || s.original) + "</div>" +
-      '<div class="stop-item__meta">Paragem ' + (idx + 1) + " de " + orderedStops.length + "</div>" +
-      "</span>" +
-      '<span class="stop-item__go">' +
-      '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">' +
-      '<path d="M9 18l6-6-6-6"/></svg></span>';
-    li.addEventListener("click", () => window.open(navigationUrl(s), "_blank"));
-    stopList.appendChild(li);
+  const totalStops = orderedGroups.reduce((sum, g) => sum + g.stops.length, 0);
+  let globalIdx = 0;
+
+  orderedGroups.forEach((group) => {
+    const header = document.createElement("li");
+    header.className = "stop-group-header";
+    header.innerHTML =
+      escapeHtml(group.parish) +
+      '<span class="stop-group-header__count">' + group.stops.length +
+      (group.stops.length === 1 ? " paragem" : " paragens") + "</span>";
+    stopList.appendChild(header);
+
+    group.stops.forEach((s) => {
+      globalIdx++;
+      const li = document.createElement("li");
+      li.className = "stop-item";
+      li.innerHTML =
+        '<span class="stop-item__badge">' + globalIdx + "</span>" +
+        '<span class="stop-item__text">' +
+        '<div class="stop-item__addr">' + escapeHtml(s.formatted || s.original) + "</div>" +
+        '<div class="stop-item__meta">Paragem ' + globalIdx + " de " + totalStops + "</div>" +
+        "</span>" +
+        '<span class="stop-item__go">' +
+        '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">' +
+        '<path d="M9 18l6-6-6-6"/></svg></span>';
+      li.addEventListener("click", () => window.open(navigationUrl(s), "_blank"));
+      stopList.appendChild(li);
+    });
   });
 }
 
@@ -572,9 +653,11 @@ btnCalc.addEventListener("click", async () => {
       throw new Error("Não foi possível localizar nenhuma das moradas coladas.");
     }
 
-    // 3. Ordenar (nearest-neighbor + 2-opt, linha reta)
-    setLoading("A calcular a melhor sequência...", validPoints.length + " paragens");
-    const orderedStops = optimizeOrder(depot, validPoints);
+    // 3. Ordenar por freguesia (para facilitar o carregamento da
+    //    carrinha), e dentro de cada freguesia otimizar a sequência
+    setLoading("A agrupar por freguesia e a calcular a sequência...", validPoints.length + " paragens");
+    const orderedGroups = optimizeOrderByParish(depot, validPoints);
+    const orderedStops = orderedGroups.flatMap((g) => g.stops);
 
     // 4. Percurso real com trânsito (fragmentado se necessário)
     let routeResult = null;
@@ -595,7 +678,7 @@ btnCalc.addEventListener("click", async () => {
 
     // 5. Render
     renderMap(depot, orderedStops, routeResult ? routeResult.polyline : null);
-    renderStopList(depot, orderedStops);
+    renderStopList(depot, orderedGroups);
 
     let summary = orderedStops.length + " paragens";
     if (routeResult) {

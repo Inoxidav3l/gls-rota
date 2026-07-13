@@ -67,6 +67,15 @@ function loadGoogleMapsScript(apiKey) {
   return googleMapsLoadPromise;
 }
 
+const libraryImportPromises = {};
+
+function importGoogleLibrary(name) {
+  if (!libraryImportPromises[name]) {
+    libraryImportPromises[name] = google.maps.importLibrary(name);
+  }
+  return libraryImportPromises[name];
+}
+
 /* =========================================================
    Elementos DOM
    ========================================================= */
@@ -184,7 +193,10 @@ async function geocodeAddress(address, apiKey) {
   if (geocodeCache[key]) return geocodeCache[key];
 
   await loadGoogleMapsScript(apiKey);
-  if (!geocoderInstance) geocoderInstance = new google.maps.Geocoder();
+  if (!geocoderInstance) {
+    const { Geocoder } = await importGoogleLibrary("geocoding");
+    geocoderInstance = new Geocoder();
+  }
 
   const result = await new Promise((resolve, reject) => {
     geocoderInstance.geocode({ address, region: "PT" }, (results, status) => {
@@ -294,9 +306,10 @@ const MAX_INTERMEDIATES_PER_CALL = 23;
 
 let directionsServiceInstance = null;
 
-function computeRouteChunk(origin, destination, intermediates) {
+async function computeRouteChunk(origin, destination, intermediates) {
+  const { DirectionsService, TravelMode } = await importGoogleLibrary("routes");
   if (!directionsServiceInstance) {
-    directionsServiceInstance = new google.maps.DirectionsService();
+    directionsServiceInstance = new DirectionsService();
   }
 
   const request = {
@@ -307,7 +320,7 @@ function computeRouteChunk(origin, destination, intermediates) {
       stopover: true,
     })),
     optimizeWaypoints: false,
-    travelMode: google.maps.TravelMode.DRIVING,
+    travelMode: TravelMode.DRIVING,
     drivingOptions: {
       departureTime: new Date(),
       trafficModel: "bestguess",

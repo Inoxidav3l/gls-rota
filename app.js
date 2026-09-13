@@ -7,6 +7,18 @@
 const STORAGE_KEY = "gls-rota-settings-v1";
 const GEOCODE_CACHE_KEY = "gls-rota-geocode-cache-v1";
 
+/* =========================================================
+   Leitura de moradas por foto (Cloud Function + Gemini)
+
+   IMPORTANTE: depois de fazeres deploy da função em
+   cloud-function/, substitui o URL abaixo pelo URL real que o
+   `gcloud functions deploy` te devolver. Se tiveres definido
+   APP_SECRET na função, põe aqui o mesmo valor.
+   ========================================================= */
+
+const EXTRACT_ADDRESS_URL = "https://REGIAO-PROJETO.cloudfunctions.net/extractAddress";
+const APP_SECRET = "";
+
 function loadSettings() {
   try {
     return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
@@ -97,6 +109,9 @@ const viewLoading = document.getElementById("view-loading");
 const viewRoute = document.getElementById("view-route");
 
 const addressInput = document.getElementById("address-input");
+const btnPhoto = document.getElementById("btn-photo");
+const photoInput = document.getElementById("photo-input");
+const photoStatus = document.getElementById("photo-status");
 const depotChip = document.getElementById("depot-chip");
 const depotChipText = document.getElementById("depot-chip-text");
 const btnCalc = document.getElementById("btn-calc");
@@ -189,6 +204,92 @@ btnSaveSettings.addEventListener("click", () => {
 
 refreshDepotChip();
 refreshNotesBanner();
+
+/* =========================================================
+   Leitura de morada a partir de foto da etiqueta
+   ========================================================= */
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+    reader.onerror = () => reject(new Error("Não foi possível ler o ficheiro da foto."));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function extractAddressFromPhoto(file) {
+  const base64 = await fileToBase64(file);
+  const headers = { "Content-Type": "application/json" };
+  if (APP_SECRET) headers["x-app-secret"] = APP_SECRET;
+
+  let resp;
+  try {
+    resp = await fetch(EXTRACT_ADDRESS_URL, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ image: base64, mimeType: file.type || "image/jpeg" }),
+    });
+  } catch (err) {
+    throw new Error("Não consegui contactar o serviço de leitura de moradas.");
+  }
+
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error(body.error || "Falha ao ler a etiqueta (erro " + resp.status + ").");
+  }
+
+  const data = await resp.json();
+  if (!data.address) {
+    throw new Error("Não consegui ler a morada nesta foto. Tenta outra vez ou escreve à mão.");
+  }
+  return data.address;
+}
+
+function appendAddressLine(address) {
+  const current = addressInput.value;
+  if (!current.trim()) {
+    addressInput.value = address;
+  } else if (current.endsWith("\n")) {
+    addressInput.value = current + address;
+  } else {
+    addressInput.value = current + "\n" + address;
+  }
+  addressInput.scrollTop = addressInput.scrollHeight;
+}
+
+btnPhoto.addEventListener("click", () => {
+  if (!EXTRACT_ADDRESS_URL || EXTRACT_ADDRESS_URL.includes("REGIAO-PROJETO")) {
+    photoStatus.className = "photo-status photo-status--error";
+    photoStatus.textContent = "Ainda não configuraste o serviço de leitura de moradas (vê o README).";
+    photoStatus.hidden = false;
+    return;
+  }
+  photoInput.click();
+});
+
+photoInput.addEventListener("change", async () => {
+  const file = photoInput.files[0];
+  photoInput.value = ""; // permite voltar a escolher a mesma foto, se preciso
+  if (!file) return;
+
+  btnPhoto.disabled = true;
+  photoStatus.className = "photo-status";
+  photoStatus.textContent = "A ler a etiqueta...";
+  photoStatus.hidden = false;
+
+  try {
+    const address = await extractAddressFromPhoto(file);
+    appendAddressLine(address);
+    photoStatus.textContent = "Adicionado: " + address;
+  } catch (err) {
+    console.error(err);
+    photoStatus.className = "photo-status photo-status--error";
+    photoStatus.textContent = err.message || "Erro ao ler a etiqueta.";
+  } finally {
+    btnPhoto.disabled = false;
+  }
+});
 
 /* =========================================================
    Geocoding (Google Geocoding API), com cache local

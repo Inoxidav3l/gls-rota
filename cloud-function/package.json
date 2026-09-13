@@ -1,0 +1,12 @@
+{
+  "name": "gls-rota-extract-address",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@google/genai": "^1.52.0"
+  }
+}

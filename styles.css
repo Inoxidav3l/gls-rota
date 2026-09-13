@@ -158,6 +158,32 @@ button, input, textarea {
 .btn-primary:active { transform: scale(0.98); }
 .btn-primary:disabled { opacity: 0.5; }
 
+.photo-row {
+  display: flex;
+}
+
+.btn-secondary {
+  flex: 1;
+  border: 1.5px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 15px;
+  padding: 13px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.btn-secondary:active { transform: scale(0.98); }
+.btn-secondary:disabled { opacity: 0.5; }
+
+.photo-status {
+  font-size: 13px;
+  color: var(--ink-soft);
+  margin: -6px 0 0;
+}
+.photo-status--error { color: var(--danger); }
+
 .link-btn {
   background: none;
   border: none;

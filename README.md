@@ -37,9 +37,38 @@ App instalável (PWA) que ordena as entregas do dia a partir do depósito, desen
 ## O que ainda não faz (fases seguintes, como planeámos)
 
 - Não aplica ainda as tuas notas locais ao cálculo da rota (só as mostra como lembrete).
-- Não interpreta moradas mal escritas com IA — se uma morada não for encontrada, aparece marcada como "não localizada" no resumo.
 - Sem ajustes por linguagem natural ainda ("põe X primeiro").
+- Alerta de proximidade GPS — ainda por construir.
+
+## Foto da etiqueta → morada automática
+
+Agora dá para tocar em **📷 Foto da etiqueta**, tirar foto à etiqueta do pacote, e a morada aparece automaticamente numa nova linha na lista — já não precisas de escrever as 60+ moradas à mão. Isto usa um modelo Gemini para ler a etiqueta.
+
+**Porque é que isto precisa de uma peça extra (a Cloud Function):** a chave da API Gemini, ao contrário da chave do Google Maps, não pode ser restrita por site (HTTP referrer) — só por IP, o que não serve para um telemóvel em rede móvel/wifi variável. Pôr essa chave diretamente no `app.js` deixava-a visível a qualquer pessoa que inspecionasse o código da app publicada. Por isso a chave Gemini vive só numa pequena função na Google Cloud (que já usas para o Maps), e a app fala com essa função — nunca diretamente com a Gemini.
+
+### Deploy da função (só precisas de fazer isto uma vez)
+
+Precisas do [gcloud CLI](https://cloud.google.com/sdk/docs/install) instalado e autenticado (`gcloud auth login`), e de uma chave de API Gemini — cria uma em [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
+
+```bash
+cd cloud-function
+gcloud config set project gls-rota
+
+gcloud functions deploy extractAddress \
+  --gen2 \
+  --runtime=nodejs20 \
+  --region=europe-west1 \
+  --source=. \
+  --entry-point=extractAddress \
+  --trigger-http \
+  --allow-unauthenticated \
+  --set-env-vars GEMINI_API_KEY=A_TUA_CHAVE_GEMINI,APP_SECRET=escolhe-uma-frase-qualquer
+```
+
+No fim, o comando mostra um `url:` — copia-o e cola-o no `app.js`, na constante `EXTRACT_ADDRESS_URL` (substitui o placeholder), e põe a mesma frase de `APP_SECRET` na constante `APP_SECRET` logo a seguir. Depois faz upload dos ficheiros atualizados (`app.js`, `index.html`, `styles.css`) para o repositório, como sempre.
+
+**Recomendado:** na Google Cloud Console → Billing → Budgets & alerts, define um orçamento baixo (ex.: €2/mês) com alerta, como rede de segurança extra. Ao teu volume de fotos, o custo real com `gemini-2.5-flash-lite` deve ficar bem abaixo disso — mas o alerta avisa-te se algo correr mal.
 
 ## Nota de segurança
 
-A tua chave de API fica guardada só no armazenamento local do teu telemóvel/navegador (nunca é enviada para mim nem para mais lado nenhum além da Google). Se limpares os dados do navegador ou trocares de telemóvel, tens de a inserir de novo.
+A tua chave da API Google Maps fica guardada só no armazenamento local do teu telemóvel/navegador (nunca é enviada para mim nem para mais lado nenhum além da Google). A chave da API Gemini nunca chega ao telemóvel — fica só na Cloud Function, como explicado acima. Se limpares os dados do navegador ou trocares de telemóvel, tens de inserir de novo a chave do Maps.

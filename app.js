@@ -16,8 +16,8 @@ const GEOCODE_CACHE_KEY = "gls-rota-geocode-cache-v1";
    APP_SECRET na função, põe aqui o mesmo valor.
    ========================================================= */
 
-const EXTRACT_ADDRESS_URL = "https://europe-west1-gls-rota.cloudfunctions.net/extractAddress";
-const APP_SECRET = "rotations-for-the-win";
+const EXTRACT_ADDRESS_URL = "https://REGIAO-PROJETO.cloudfunctions.net/extractAddress";
+const APP_SECRET = "";
 
 function loadSettings() {
   try {
